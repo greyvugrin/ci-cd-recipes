@@ -1,0 +1,41 @@
+name: Load Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_reqs_second:
+        description: 'Max requests per second'
+        required: true
+        default: '50'
+      cloud:
+        description: 'Run on K6 Cloud'
+        required: true
+        default: 'false'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+jobs:
+  load-test:
+    name: "Load Test (${{ github.event.inputs.max_reqs_second }} RPS"
+    # Note: If this needs to access private resources, it will need to run on a self-hosted runner that has access to those resources.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: grafana/setup-k6-action@v1
+      - uses: grafana/run-k6-action@v1
+        # The action will count cloud functionality as enabled if these variables are not empty
+        env:
+          K6_CLOUD_TOKEN: ${{ github.event.inputs.cloud == 'true' && secrets.K6_CLOUD_TOKEN || '' }}
+          K6_CLOUD_PROJECT_ID: ${{ github.event.inputs.cloud == 'true' && secrets.K6_CLOUD_PROJECT_ID || '' }}
+        with:
+          # NOTE: Update this path when integrating into a repo
+          path: |
+              ./load-tests/tests/demo.ts
+          # This needs to be treated as one line so we are using the > (Folded Block Scalar)
+          flags: >
+            --env MAX_REQS_SECOND=${{ github.event.inputs.max_reqs_second }}
+          # This will be ignored if it's not a cloud run
+          cloud-run-locally: true
+          cloud-comment-on-pr: false
