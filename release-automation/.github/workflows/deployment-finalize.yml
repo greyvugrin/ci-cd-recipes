@@ -1,0 +1,90 @@
+name: Finalize Deployment
+
+on:
+  workflow_call:
+    inputs:
+      DEPLOYMENT_ID:
+        description: "Deployment ID to update"
+        required: true
+        type: string
+      ENVIRONMENT:
+        description: "Select the environment that was deployed to"
+        required: true
+        type: string
+      SUCCESS:
+        description: "Was the deployment successful?"
+        required: true
+        type: boolean
+      SLACK_THREAD_TS:
+        description: "Slack thread timestamp for notifications"
+        required: false
+        type: string
+    secrets:
+      SLACK_TOKEN:
+        description: "Slack token for notifications"
+        required: false
+      SLACK_CHANNEL_ID:
+        description: "Slack channel ID for notifications"
+        required: false
+
+jobs:
+  finalize:
+    name: "Finalize"
+    runs-on: ubuntu-latest
+    if: ${{ inputs.DEPLOYMENT_ID }}
+
+    env:
+      # Put a failure as the default. We will change to a success if it goes through
+      SLACK_MESSAGE: "🔴 ${{inputs.ENVIRONMENT}} deployment failed."
+
+    outputs:
+      slack_message: ${{steps.set_slack_message.outputs.slack_message}}
+
+    steps:
+      - if: ${{ inputs.SUCCESS }}
+        name: "Update Deployment: success"
+        id: update_deployment_success
+        run: |
+          # We want this to throw an error if the request fails
+          curl -X POST \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/${{ github.repository_owner }}/${{ github.event.repository.name }}/deployments/${{ inputs.DEPLOYMENT_ID }}/statuses \
+            -d '{"state": "success"}' \
+            --fail-with-body
+          # Update slack message env to success
+          SLACK_MESSAGE="🟢 ${{inputs.ENVIRONMENT}} deployment succeeded."
+          echo "SLACK_MESSAGE=$SLACK_MESSAGE" >> $GITHUB_ENV
+
+      - if: ${{ !inputs.SUCCESS }}
+        name: "Update Deployment: failure"
+        id: update_deployment_failure
+        run: |
+          curl -X POST \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/${{ github.repository_owner }}/${{ github.event.repository.name }}/deployments/${{ inputs.DEPLOYMENT_ID }}/statuses \
+            -d '{"state": "failure"}'
+
+      # send slack message env to output
+      - name: "Set Slack Message"
+        id: set_slack_message
+        run: |
+          echo "slack_message=$SLACK_MESSAGE" >> $GITHUB_OUTPUT
+
+  slack-notification:
+    name: "Slack Notification"
+    runs-on: ubuntu-latest
+    needs: finalize
+    if: ${{ inputs.SLACK_THREAD_TS }}
+    steps:
+      - name: Create message with the deployment status
+        uses: slackapi/slack-github-action@v2.1.1
+        id: slack-message
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_TOKEN }}
+          payload: |
+            channel: ${{ secrets.SLACK_CHANNEL_ID }}
+            thread_ts: "${{ inputs.SLACK_THREAD_TS }}"
+            text: "${{ needs.finalize.outputs.slack_message }}"
