@@ -1,0 +1,73 @@
+name: Release Pull Request Opened
+
+on:
+  pull_request:
+    types:
+      - opened
+    branches:
+      - main
+
+env:
+  PR_REF: ${{ github.event.pull_request.head.ref }}
+  PR_NUMBER: ${{ github.event.pull_request.number }}
+  SLACK_CHANNEL_ID: ${{ vars.RELEASES_SLACK_CHANNEL_ID }}
+
+jobs:
+  create-metadata:
+    name: "Create Release Metadata"
+    runs-on: ubuntu-latest
+    steps:
+      # Set commonly used variables
+      - name: Set Variables
+        run: |
+          echo "RELEASE_VERSION=$(echo $PR_REF | sed 's/release\///')" >> $GITHUB_ENV
+
+      - name: Note about pre-production scaling
+        run: |
+          echo "Note: scaling down a stage/pre-production environment may be helpful here."
+
+      - name: Post blocks to a Slack channel
+        uses: slackapi/slack-github-action@v2.1.1
+        id: slack-message
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            channel: ${{ env.SLACK_CHANNEL_ID }}
+            text: "Starting Release: ${{ env.RELEASE_VERSION }}. PR: <https://github.com/${{ github.repository }}/pull/${{ env.PR_NUMBER }}>"
+            blocks:
+              - type: "section"
+                text:
+                  type: "mrkdwn"
+                  text: ":one-sec-cooking: *Starting Release:* `${{ env.RELEASE_VERSION }}`"
+              - type: "section"
+                fields:
+                  - type: "mrkdwn"
+                    text: "<https://github.com/${{ github.repository }}/pull/${{ env.PR_NUMBER }}|Release PR>"
+
+
+      # Create an artifact that ties the release PR to the pre-production deployment
+      # It should be called release.json and have:
+      # - release_pr_number: the PR number of the release
+      # - slack_thread_id: the thread ID of the release
+      # - release_version: the version of the release (this is the branch name without the 'release/' prefix
+      # - release_branch: the branch name of the release PR
+      - name: Create Release Metadata Artifact
+        run: |
+          echo "Creating release metadata artifact"
+          # Create a blank JSON file
+          echo '{}' > release.json
+          # Add the release PR number
+          echo $(jq --arg value "$PR_NUMBER" '.release_pr_number = $value' release.json) > release.json
+          # Add the slack thread id
+          echo $(jq --arg value "${{ steps.slack-message.outputs.ts }}" '.slack_thread_id = $value' release.json) > release.json
+          # Add the release version
+          echo $(jq --arg value "$RELEASE_VERSION" '.release_version = $value' release.json) > release.json
+          # Add the release branch
+          echo $(jq --arg value "$PR_REF" '.release_branch = $value' release.json) > release.json
+
+      - name: Upload Release Metadata Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-metadata
+          path: release.json

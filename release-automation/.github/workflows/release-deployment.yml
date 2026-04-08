@@ -1,0 +1,146 @@
+name: Release Deployment
+
+on:
+  workflow_call:
+    inputs:
+      ENVIRONMENT:
+        description: "The environment to deploy to (e.g., stage, production)"
+        required: true
+        type: string
+      LATEST_TAG:
+        description: "The latest tag to use for the build (e.g., latest, stage-latest)"
+        required: true
+        type: string
+      K8S_NAMESPACE:
+        description: "The Kubernetes namespace to deploy to"
+        required: true
+        type: string
+      BRANCH:
+        description: "Enter the branch to deploy (e.g., release/*)"
+        required: false
+        type: string
+      COMMIT_HASH:
+        description: "Specify a commit hash (overrides branch if provided)"
+        required: false
+        type: string
+      FORCE_DEPLOYMENT:
+        description: "Force deployment: deploy all services regardless of files changed since the last deployment."
+        required: true
+        type: string
+
+jobs:
+  validate-input:
+    name: "Validate Inputs"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Validate inputs
+        run: |
+          # Check if ENVIRONMENT is valid
+          if [[ -z "${{ inputs.ENVIRONMENT }}" || ( "${{ inputs.ENVIRONMENT }}" != "stage" && "${{ inputs.ENVIRONMENT }}" != "production" ) ]]; then
+            echo "Error: ENVIRONMENT must be either 'stage' or 'production'."
+            exit 1
+          fi
+          if [[ -n "${{ inputs.BRANCH }}" && ! "${{ inputs.BRANCH }}" =~ ^release/[0-9]*\.[0-9]*\.[0-9]*$ ]]; then
+            echo "Error: Branch must match the pattern 'release/*.*.*'."
+            exit 1
+          fi
+
+  # Reusable workflow to gather slack thread / release metadata
+  release-metadata:
+    name: "Fetch Release Metadata"
+    uses: ./.github/workflows/release-metadata.yml
+    needs: validate-input
+    secrets: inherit
+
+  init:
+    name: "Initialize Deployment"
+    uses: ./.github/workflows/deployment-init.yml
+    needs:
+      - validate-input
+      - release-metadata
+    with:
+      ENVIRONMENT: ${{ inputs.ENVIRONMENT }}
+      GIT_REF: ${{ inputs.COMMIT_HASH || inputs.BRANCH }}
+      FORCE_DEPLOYMENT: ${{ inputs.FORCE_DEPLOYMENT }}
+      SLACK_THREAD_TS: ${{ needs.release-metadata.outputs.slack_thread_ts }}
+    secrets:
+      SLACK_CHANNEL_ID: ${{ vars.RELEASES_SLACK_CHANNEL_ID }}
+      SLACK_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+
+  build-deploy-placeholder:
+    name: "Build and Deploy Placeholder"
+    runs-on: ubuntu-latest
+    needs: init
+    if: ${{ needs.init.outputs.skip_deployment != 'true' }}
+    steps:
+      - name: Add your build/deploy workflow
+        run: echo "drop the equivalent step for your repo here"
+
+  post-deployment-tests:
+    name: "Post Deployment Tests"
+    runs-on: ubuntu-latest
+    needs:
+      - release-metadata
+      - build-deploy-placeholder
+    steps:
+      - name: Invoke external deployment tests workflow
+        env:
+          # We need this token to trigger the workflow in the other repo
+          GH_TOKEN: ${{ secrets.QA_AUTOMATION_PAT }}
+        run: |
+          gh workflow run deployment-tests.yml \
+            --repo your-org/qa-automation \
+            --ref main \
+            --field env_name=${{ inputs.ENVIRONMENT }} \
+            --field release_slack_thread_ts=${{ needs.release-metadata.outputs.slack_thread_ts }} \
+            --field release_slack_channel_id=${{ vars.RELEASES_SLACK_CHANNEL_ID }}
+
+  release-message:
+    name: "Slack Message - External Tests Started"
+    runs-on: ubuntu-latest
+    needs:
+      - release-metadata
+      - post-deployment-tests
+
+    steps:
+      # Get run ID of the tests workflow on QA repo
+      - name: Get Run ID
+        id: get_run_id
+        env:
+          # We need this token to trigger the workflow in the other repo
+          GH_TOKEN: ${{ secrets.QA_AUTOMATION_PAT }}
+        run: |
+          # Wait a few seconds to ensure the run is created
+          # This is needed bc the github API doesn't return the run info
+          # and you need to wait for it to be available
+          RUN_ID=$(sleep 5 && gh run list --workflow=deployment-tests.yml --repo your-org/qa-automation --limit 1 --json databaseId --jq '.[0].databaseId')
+          echo "TESTS_RUN_ID=$RUN_ID" >> $GITHUB_ENV
+
+      - name: Create message with link to the run
+        uses: slackapi/slack-github-action@v2.1.1
+        id: slack-message
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            channel: ${{ vars.RELEASES_SLACK_CHANNEL_ID }}
+            thread_ts: "${{ needs.release-metadata.outputs.slack_thread_ts }}"
+            text: "🟡 ${{ inputs.ENVIRONMENT }} External tests triggered. <https://github.com/your-org/qa-automation/actions/runs/${{ env.TESTS_RUN_ID }}|View tests run>"
+
+  finalize:
+    if: always()
+    name: "Finalize Deployment"
+    uses: ./.github/workflows/deployment-finalize.yml
+    needs:
+      - init
+      - release-metadata
+      - build-deploy-placeholder
+    with:
+      ENVIRONMENT: ${{ inputs.ENVIRONMENT }}
+      DEPLOYMENT_ID: ${{ needs.init.outputs.deployment_id }}
+      SUCCESS: ${{ needs.build-deploy-placeholder.result == 'success' }}
+      SLACK_THREAD_TS: ${{ needs.release-metadata.outputs.slack_thread_ts }}
+    secrets:
+      SLACK_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      SLACK_CHANNEL_ID: ${{ vars.RELEASES_SLACK_CHANNEL_ID }}

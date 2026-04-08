@@ -1,0 +1,51 @@
+name: Release Metadata
+
+on:
+  workflow_call:
+    outputs:
+      slack_thread_ts:
+        description: "Slack thread timestamp for the release thread"
+        value: ${{ jobs.metadata.outputs.thread_ts }}
+
+jobs:
+  metadata:
+    name: "Get Metadata"
+    runs-on: ubuntu-latest
+    outputs:
+      thread_ts: ${{ steps.get_thread_ts.outputs.thread_ts }}
+    steps:
+      - name: Get last PR opened run ID
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          WORKFLOW_NAME=release-pull-request-opened.yml
+          RUN_ID=$(gh run list --status success --workflow "$WORKFLOW_NAME" --repo ${{ github.repository }} --limit 1 --json databaseId --jq '.[0].databaseId')
+          if [ -z "$RUN_ID" ] || [ "$RUN_ID" = "null" ]; then
+            echo "Could not find a successful workflow run for $WORKFLOW_NAME" >&2
+            exit 1
+          fi
+          echo "RELEASE_RUN_ID=$RUN_ID" >> $GITHUB_ENV
+
+      - name: Download release metadata artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: release-metadata
+          github-token: ${{ secrets.RELEASE_AUTOMATION_PAT }}
+          run-id: ${{ env.RELEASE_RUN_ID }}
+
+      - name: Get thread timestamp from artifact
+        id: get_thread_ts
+        run: |
+          if [ ! -f release.json ]; then
+            echo "release.json not found in artifact contents" >&2
+            ls -al
+            exit 1
+          fi
+          thread_ts=$(jq -r '.slack_thread_id' release.json)
+          if [ -z "$thread_ts" ] || [ "$thread_ts" = "null" ]; then
+            echo "slack_thread_id missing in release.json" >&2
+            echo "Contents:" >&2
+            cat release.json >&2
+            exit 1
+          fi
+          echo "thread_ts=$thread_ts" >> $GITHUB_OUTPUT
