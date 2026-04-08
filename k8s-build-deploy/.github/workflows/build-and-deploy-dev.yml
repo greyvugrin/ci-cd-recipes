@@ -1,0 +1,31 @@
+name: Build & Deploy to `dev`
+
+on:
+  push:
+    branches:
+    - develop
+
+jobs:
+  build:
+    name: "Build Images"
+    uses: ./.github/workflows/build.yml
+    with:
+      LATEST_TAG: dev-latest
+    secrets:
+      ACR_USERNAME: ${{ secrets.AZURE_CLIENT_ID_DEV }}
+      ACR_PASSWORD: ${{ secrets.AZURE_CLIENT_SECRET_DEV }}
+
+  deploy:
+    name: "Deploy to AKS"
+    uses: ./.github/workflows/deploy.yml
+    needs: build
+    with:
+      AKS_RESOURCE_GROUP: service-dev
+      AKS_CLUSTER_NAME: service-dev
+      K8S_NAMESPACE: dev
+      REGISTRY_NAME: YOUR_REGISTRY.azurecr.io
+    secrets:
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID_DEV }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET_DEV }}

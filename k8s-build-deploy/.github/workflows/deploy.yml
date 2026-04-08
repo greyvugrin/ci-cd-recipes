@@ -1,0 +1,69 @@
+name: Deploy Workflow
+
+on:
+  workflow_call:
+    inputs:
+      AKS_RESOURCE_GROUP:
+        required: true
+        type: string
+      AKS_CLUSTER_NAME:
+        required: true
+        type: string
+      K8S_NAMESPACE:
+        required: true
+        type: string
+      REGISTRY_NAME:
+        required: true
+        type: string
+    secrets:
+      AZURE_TENANT_ID:
+        required: true
+      AZURE_SUBSCRIPTION_ID:
+        required: true
+      AZURE_CLIENT_ID:
+        required: true
+      AZURE_CLIENT_SECRET:
+        required: true
+
+jobs:
+  deploy:
+    name: "Deploy"
+    # Note: If this needs to access private resources, it will need to run on a self-hosted runner that has access.
+    runs-on: ubuntu-latest
+
+    steps:
+
+    - name: 'Action: Azure Login'
+      uses: azure/login@v2
+      with:
+        creds: >-
+            {
+              "subscriptionId": "${{ secrets.AZURE_SUBSCRIPTION_ID }}",
+              "tenantId": "${{ secrets.AZURE_TENANT_ID }}",
+              "clientId": "${{ secrets.AZURE_CLIENT_ID }}",
+              "clientSecret": "${{ secrets.AZURE_CLIENT_SECRET }}"
+            }
+
+    - name: 'Login to Azure Kubernetes Service'
+      uses: azure/aks-set-context@v4
+      with:
+        resource-group: ${{ inputs.AKS_RESOURCE_GROUP }}
+        cluster-name: ${{ inputs.AKS_CLUSTER_NAME }}
+        admin: 'false'
+        use-kubelogin: 'true'
+
+    # Note: the next two steps assume the name of the deployment and containers.
+    # Adjust accordingly if your K8s manifests use different names.
+    - name: 'Rollout New Docker Images to AKS'
+      run: |
+        # Set the image on the K8s deployments
+        export APP_IMAGE=${{ inputs.REGISTRY_NAME }}/app:${{ github.sha }}
+        export STATIC_IMAGE=${{ inputs.REGISTRY_NAME }}/static:${{ github.sha }}
+        kubectl config set-context --current --namespace=${{ inputs.K8S_NAMESPACE }}
+        kubectl set image deployment/app \
+          app=$APP_IMAGE \
+          static=$STATIC_IMAGE
+        kubectl annotate deployment/app kubernetes.io/change-cause="Github Actions: Deploy (${{ github.sha }})"
+
+    - name: 'Verify rollout finished successfully'
+      run: kubectl rollout status deployment app
